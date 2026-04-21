@@ -1,0 +1,23 @@
+# ── Web Framework ────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+pydantic==2.7.1
+pydantic-settings==2.2.1
+
+# ── Computer Vision ──────────────────────────────────────────────────────────
+ultralytics==8.2.18          # YOLOv10 support
+opencv-python-headless==4.9.0.80
+Pillow==10.3.0
+numpy==1.26.4
+
+# ── Face Recognition ─────────────────────────────────────────────────────────
+#deepface==0.0.91
+
+
+# ── Google Gemini ────────────────────────────────────────────────────────────
+groq==0.9.0
+
+# ── Async / Utilities ────────────────────────────────────────────────────────
+httpx==0.27.0
+python-dotenv==1.0.1

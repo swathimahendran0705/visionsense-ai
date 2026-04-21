@@ -1,0 +1,19 @@
+# Virtual Environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables
+.env
+
+# YOLO model
+yolov10n.pt
+
+# Known faces (private)
+known_faces/
+
+# VS Code
+.vscode/
