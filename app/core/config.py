@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     GROQ_MODEL: str = "llama-3.3-70b-versatile"   # or "llama3-8b-8192" for even faster
     # ── YOLO ─────────────────────────────────────────────────────────────
     YOLO_MODEL_PATH: str = "yolov10n.pt"          # nano for speed; swap for yolov10s/m
-    YOLO_CONFIDENCE: float = 0.25
+    YOLO_CONFIDENCE: float = 0.35
     YOLO_DEVICE: str = "cpu"                       # "0" for GPU
 
     # ── DeepFace ─────────────────────────────────────────────────────────

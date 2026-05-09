@@ -1,115 +1,151 @@
 """
-DeepFace face-recognition service.
-Matches faces in an input image against a local known-faces database.
-
-known_faces/
-├── Amma/
-│   ├── photo1.jpg
-│   └── photo2.jpg
-├── Appa/
-│   └── photo1.jpg
-└── Ravi/
-    └── photo1.jpg
+Face Recognition Service using Groq Vision.
+Compares input image against known_faces database using LLaMA vision model.
+No TensorFlow, No ONNX required!
 """
 
 import asyncio
+import base64
 import logging
 import os
 from pathlib import Path
 from typing import List
 
-# ── Force PyTorch backend — avoids TensorFlow 377MB download ────────────────
-os.environ["DEEPFACE_HOME"] = "."
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["CUDA_VISIBLE_DEVICES"] = ""  # CPU only
-
 import numpy as np
-# from deepface import DeepFace
+from PIL import Image
+import io
 
+from groq import Groq
 from app.core.config import settings
 from app.schemas.models import FaceMatch
 
 logger = logging.getLogger(__name__)
 
 KNOWN_FACES_DIR = Path(settings.KNOWN_FACES_DIR)
+_groq_client = Groq(api_key=settings.GROQ_API_KEY)
+
+
+def _numpy_to_base64(image: np.ndarray) -> str:
+    """Convert numpy array to base64 string."""
+    pil_img = Image.fromarray(image)
+    buffer = io.BytesIO()
+    pil_img.save(buffer, format="JPEG", quality=80)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def _photo_to_base64(photo_path: Path) -> str:
+    """Convert photo file to base64 string."""
+    with open(photo_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+def _get_known_faces() -> dict:
+    """Get all known faces from directory."""
+    known = {}
+    if not KNOWN_FACES_DIR.exists():
+        logger.warning("known_faces directory not found!")
+        return known
+
+    for person_dir in KNOWN_FACES_DIR.iterdir():
+        if not person_dir.is_dir():
+            continue
+        photos = []
+        for ext in ["*.jpg", "*.jpeg", "*.png"]:
+            photos.extend(person_dir.glob(ext))
+        if photos:
+            known[person_dir.name] = photos
+            logger.info("Found %d photos for '%s'", len(photos), person_dir.name)
+
+    return known
 
 
 async def recognise_faces(image: np.ndarray) -> List[FaceMatch]:
     """
-    Async wrapper: runs DeepFace in a thread executor.
-    Returns matched face records.
+    Async wrapper for face recognition using Groq Vision.
     """
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _run_deepface, image)
+    return await loop.run_in_executor(None, _run_recognition, image)
 
 
-def _run_deepface(image: np.ndarray) -> List[FaceMatch]:
-    if not KNOWN_FACES_DIR.exists():
-        logger.warning(
-            "known_faces directory '%s' not found. "
-            "Create it with sub-folders per person.",
-            KNOWN_FACES_DIR,
-        )
-        return []
-
-    matches: List[FaceMatch] = []
-
+def _run_recognition(image: np.ndarray) -> List[FaceMatch]:
     try:
-        results = DeepFace.find(
-            img_path=image,
-            db_path=str(KNOWN_FACES_DIR),
-            model_name=settings.DEEPFACE_MODEL,
-            detector_backend=settings.DEEPFACE_DETECTOR,
-            distance_metric=settings.DEEPFACE_DISTANCE_METRIC,
-            enforce_detection=False,
-            silent=True,
-        )
-    except Exception as exc:
-        logger.error("DeepFace.find() failed: %s", exc)
-        return []
+        known_faces = _get_known_faces()
 
-    for face_df in results:
-        # results is a list of DataFrames, one per face detected
-        if face_df.empty:
-            continue
+        if not known_faces:
+            logger.warning("No known faces found!")
+            return []
 
-        best = face_df.iloc[0]  # closest match first
-        distance: float = float(best["distance"])
+        input_base64 = _numpy_to_base64(image)
+        matches = []
 
-        if distance > settings.FACE_MATCH_THRESHOLD:
-            # No confident match for this face
-            continue
+        for person_name, photos in known_faces.items():
+            # Use first photo as reference
+            ref_photo = photos[0]
+            ref_base64 = _photo_to_base64(ref_photo)
 
-        # Derive person name from file path: known_faces/<Name>/photo.jpg
-        identity_path: str = best["identity"]
-        person_name = Path(identity_path).parent.name
+            prompt = f"""You are a face recognition system.
+Compare these two images:
+- Image 1: Reference photo of {person_name}
+- Image 2: Input photo to identify
 
-        # Facial region bbox from DeepFace ≥ 0.0.93
-        region = best.get("source_x", None)
-        if region is not None:
-            bbox = [
-                int(best.get("source_x", 0)),
-                int(best.get("source_y", 0)),
-                int(best.get("source_w", 0)),
-                int(best.get("source_h", 0)),
-            ]
-        else:
-            bbox = [0, 0, 0, 0]
+Answer ONLY with one of these:
+- "MATCH" if the same person appears in both images
+- "NO_MATCH" if different people
 
-        confidence = max(0.0, 1.0 - distance)
+Just say MATCH or NO_MATCH, nothing else."""
 
-        matches.append(
-            FaceMatch(
-                identity=person_name,
-                confidence=round(confidence, 3),
-                distance=round(distance, 4),
-                bbox=bbox,
+            response = _groq_client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Reference photo of {person_name}:"
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{ref_base64}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": "Input photo to identify:"
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{input_base64}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=10,
             )
-        )
 
-    logger.info(
-        "DeepFace matched %d / %d faces.",
-        len(matches),
-        len(results),
-    )
-    return matches
+            result = response.choices[0].message.content.strip().upper()
+            logger.info("Groq Vision result for %s: %s", person_name, result)
+
+            if "MATCH" in result and "NO_MATCH" not in result:
+                matches.append(
+                    FaceMatch(
+                        identity=person_name,
+                        confidence=0.85,
+                        distance=0.15,
+                        bbox=[0, 0, 100, 100],
+                    )
+                )
+                logger.info("✅ Matched: %s", person_name)
+
+        return matches
+
+    except Exception as exc:
+        logger.error("Face recognition failed: %s", exc)
+        return []
